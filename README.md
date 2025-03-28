@@ -21,13 +21,6 @@ The main goal of this project is to analyze the relationship between medullary t
 ```
 your_project/
 │
-├─ data/           # Folder containing the Excel data files
-│   ├─ MTC_38features_20241230.xlsx
-│   ├─ MTC_clinical_20240831.xlsx
-│   ├─ MTC_gene_20240831_only_one.xlsx
-│   ├─ MTC_all_info_20240912.xlsx
-│   └─ ...
-│
 ├─ main.py         # Python script containing the core logic
 └─ README.md
 ```
