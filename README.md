@@ -55,31 +55,6 @@ pip install pandas numpy scikit-learn shap argparse
 
 ---
 
-## Data Description
-
-The code reads data from four primary Excel files:
-
-1. **`MTC_38features_20241230.xlsx`**  
-   Gene-related data containing multiple sheets such as Discovery, test1, and test2.
-
-2. **`MTC_clinical_20240831.xlsx`**  
-   Clinical data containing multiple sheets (Discovery, test1, test2).
-
-3. **`MTC_gene_20240831_only_one.xlsx`**  
-   Contains key gene features (optional).
-
-3. **`MTC_all_info_20240912.xlsx`**  
-   A more comprehensive file with gene, clinical, staging information, etc. (optional).
-
-**Data columns usually include:**
-- `MS_ID`: Unique sample ID.  
-- `label`: Binary classification label (e.g., presence/absence of a certain pathology).  
-- Additional columns for gene expression or clinical features.
-
-**Data preprocessing**:
-- Map categorical features (`sex`, `tumor_grade`, `Heredity`, `T`, `N`, `M`, `TNM stage`) to numeric codes.
-- Fill missing values using the column’s minimum or alternative methods.
-- Standardize (Z-score normalization) data if needed.
 
 ---
 
