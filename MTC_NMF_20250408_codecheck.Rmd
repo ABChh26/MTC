@@ -1,0 +1,405 @@
+---
+title: "MTC_figure3"
+author: "Yan Zhou"
+date: "2025-03-04"
+output: html_document
+---
+
+```{r setup}
+pacman::p_load(NMF,ComplexHeatmap,circlize,
+               RColorBrewer,tidyverse,openxlsx,
+               EnvStats,magrittr,umap,Rtsne)
+
+```
+
+
+```{r NMF}
+expression_matrix = read.table("input/MTC_NMFinputmatrix_610protcombined_20240424.csv", quote = "",sep = ",", row.names = 1,header = T)
+
+matrix_min = min(as.matrix(expression_matrix),na.rm = T)
+png_filename = c()
+pdf_filename = c()
+seed = T
+rank=6
+method= "lee"
+extractFeatures=T
+component.method="kim"
+nrun = 150 # 30-50 for rank survey
+
+## rank survey
+
+rank <- 2:rank
+
+
+  if(isTRUE(seed)){
+    rank_survey_NMF = nmf(as.matrix(expression_matrix), rank=rank, nrun = nrun, method = method, seed = 123456789)
+  }else{
+    rank_survey_NMF = nmf(as.matrix(expression_matrix), rank=rank, nrun = nrun, method = method)
+  }
+
+
+  pdf(paste0("rank",paste0(c(rank[1],tail(rank,1)),collapse = "-"),"nrun",nrun,"_",method,"_consensusmap_NMF.pdf"),height = 8, width = 12,onefile = F)
+  consensusmap(rank_survey_NMF, labCol = NA, labRow = NA)
+  dev.off()
+  
+
+  pdf(paste0("rank",paste0(c(rank[1],tail(rank,1)),collapse = "-"), "nrun",nrun,"_",method, "_survey_NMF.pdf"),onefile = F)
+  plot(rank_survey_NMF)
+  dev.off()
+
+
+
+## no. clusters = 3
+rank=3
+nrun = 150 # a typical choice would lies between 100 and 200
+
+  if(isTRUE(seed)){
+    tmp.rank_survey_NMF = nmf(as.matrix(expression_matrix), rank=rank, nrun = nrun, method = method, seed = 123456789)
+  }else{
+    tmp.rank_survey_NMF = nmf(as.matrix(expression_matrix), rank=rank, nrun = nrun, method = method)
+  }
+  
+
+    group <- NMF::predict(tmp.rank_survey_NMF,what='samples')
+    group <- group[order(group)]
+    # table(group)
+    cluster_data <- data.frame(sample=names(group),cluster=group)
+
+    write.csv(cluster_data,paste0("sample_cluster_rank",rank,".csv"))
+
+
+    ### sig.order extractFeatures
+    # component.method <- "max"
+    index <- extractFeatures(tmp.rank_survey_NMF,component.method)
+    sig.order <- unlist(index)
+    sig.order <- sig.order[!is.na(sig.order)]
+    # print(sig.order)
+    expression_matrix_sig.order <- expression_matrix[sig.order,]
+    # print(expression_matrix_sig.order)
+    if(isTRUE(seed)){
+      tmp.rank_survey_NMF_sig.order = nmf(as.matrix(expression_matrix_sig.order), rank=rank, nrun = nrun, method = method, seed = 123456789)
+    }else{
+      tmp.rank_survey_NMF_sig.order = nmf(as.matrix(expression_matrix_sig.order), rank=rank, nrun = nrun, method = method)
+    }
+
+    write.csv(rownames(expression_matrix_sig.order),file = paste0("rank",rank,"nrun",nrun,"_",method,"_extractFeatures.csv"))
+    
+    
+    pdf(file = paste0("rank",rank,"nrun",nrun,"_",method,"_basismap_extractFeatures.pdf"),onefile = F)
+   
+    basismap(tmp.rank_survey_NMF_sig.order)
+    # annColors=list(c("1"=jco[1],"2"=jco[2],"3"=jco[3],"4"=jco[4])))
+    dev.off()
+    
+    
+    pdf(paste0("rank",rank,"nrun",nrun,"_",method,"_consensusmap_NMF.extractFeatures.pdf"),
+        height = 8, width = 8,
+        onefile = F)
+    consensusmap(tmp.rank_survey_NMF_sig.order, labCol = NA, labRow = NA)
+    dev.off()
+    
+    
+    group_sig.order <- NMF::predict(tmp.rank_survey_NMF_sig.order) 
+    group_sig.order <- group_sig.order[order(group_sig.order)]
+    # table(group_sig.order)
+    cluster_data_sig.order <- data.frame(sample=names(group_sig.order),cluster=group_sig.order)
+    
+    write.csv(cluster_data_sig.order,paste0("rank",rank,"sample_cluster","_extractFeatures.csv"))
+  
+
+```
+
+```{r heatmap data processing}
+df_geno = read.xlsx("input/oncoprint.xlsx",rowNames = T)
+df_nmf = read.csv("input/MTC_discovry_346patients.csv",row.names = 1)
+lee_clu3_exf = read.xlsx("input/clinical_label.xlsx",rowNames = T)
+features =  read.csv("input/rank3nrun150_lee_extractFeatures.csv",row.names = 1)
+df_nmf = df_nmf[features$x,row.names(lee_clu3_exf)]
+
+# transfer to Z-score and remove outliers
+centermatrix <- scale(t(df_nmf))
+testdata <- data.frame(centermatrix)
+testdata = testdata[match(row.names(lee_clu3_exf), row.names(testdata)),]
+
+o1 <- (fivenum(unlist(testdata))[4]-fivenum(unlist(testdata))[2])*1.5+fivenum(unlist(testdata))[4]
+o2 <- fivenum(unlist(testdata))[2]-(fivenum(unlist(testdata))[4]-fivenum(unlist(testdata))[2])*1.5
+testdata[testdata>o1]=o1 %>%as.numeric()
+testdata[testdata<o2]=o2 %>%as.numeric()
+
+testdata2 <- t(testdata)
+testdata2 = as.data.frame(testdata2)
+
+alter_fun = list(
+  background = alter_graphic("rect", fill = "#CCCCCC"),   
+  Missense = alter_graphic("rect", fill = col["Missense"]),
+  Indel = alter_graphic("rect", fill = col["Indel"]))
+
+column_title = "clinical, genomic and proteomic characteristics of MTC subtypes"
+heatmap_legend_param = list(title = "Mutation_Types", 
+                            at = c("Missense", "Indel"), 
+                            labels = c("Missense", "Indel"))
+r_order = c("RET M918T","RET C634R/Y/F/W/L/S","RET C618R/G/Y/F/S","RET C620R/G/S/W/Y",
+            "RET A883F/T/Y/V","RET indel","RET V804M/L",
+            "RET C630G/S/R","RET C611S/Y","RET rare missense mutations",
+            "HRAS","KRAS","NRAS","Other mutations")
+r_order = match(r_order,row.names(df_geno))
+col = c("Missense" = "#6F94CD", "Indel" = "#ED7966")
+
+```
+
+
+```{r heatmap & oncoprint}
+lee_clu3_exf$immune = scale(lee_clu3_exf$immune)
+lee_clu3_exf$age = as.numeric(lee_clu3_exf$age)
+
+pdf("heatmap_oncoprint_20241210.pdf",
+    height = 22, width = 25)
+ht_list = oncoPrint(df_geno,
+                    column_split = lee_clu3_exf$cluster[match(names(df_geno),row.names(lee_clu3_exf))],
+                    alter_fun = alter_fun, row_order = r_order,
+                    col = col, alter_fun_is_vectorized = FALSE,
+                    remove_empty_columns = F, remove_empty_rows = F,
+                    column_title = column_title,    
+                    top_annotation = HeatmapAnnotation(
+                      recurence_risk = lee_clu3_exf$risk,
+                      age = lee_clu3_exf$age,
+                      sex = lee_clu3_exf$sex,
+                      tumor_grade = lee_clu3_exf$tumor_grade,
+                      heredity = lee_clu3_exf$heredity,
+                      max_tumor_size = lee_clu3_exf$max_tumor_size,
+                      HT = lee_clu3_exf$HT,
+                      concomitant_PTC = lee_clu3_exf$concomitant_PTC,
+                      vascular_invasion = lee_clu3_exf$vascular_invasion,
+                      ETE = lee_clu3_exf$ETE,
+                      multifocality = lee_clu3_exf$mulifocality,
+                      bilateral = lee_clu3_exf$bilateral,
+                      LNM = lee_clu3_exf$LNM,
+                      biochemical_recurrence = lee_clu3_exf$bio_recur,
+                      structure_recurrence = lee_clu3_exf$recur,
+                      disease_specific_death = lee_clu3_exf$death,
+                      immune = lee_clu3_exf$immune,
+                      col = list(
+                        recurence_risk = c("low" = "#A8D286","middle" = "#EBC442", "high" = "#E4793C"),
+                        #age = c("<=50" = "lightgreen",">50" = "darkgreen"),
+                        age = colorRamp2(c(0, 100), c("white", "darkgreen")),
+                        sex = c("F" = "pink","M" = "#83ADEE"),
+                        structure_recurrence = c("0" = "#57C3EA","1" = "#E66563"),
+                        disease_specific_death = c("0" = "#C1D57F","1" = "#A264A6"),
+                        tumor_grade = c("low" = "#FAFDFF", "high" = "#004474"),
+                        biochemical_recurrence = c("Relief" = "#F6E6D5",
+                                                   "Recurrence/persistence" = "#F08E94"),
+                        heredity = c("sporadic" = "#58557A","hereditary" = "#C8C245"),
+                        max_tumor_size = colorRamp2(c(0, 50), c("white", "#C72A32")),
+                        HT = c("0" = "#F9CA9C","1" = "#4D6C40"),
+                        concomitant_PTC = c("0" = "white","1" = "darkred"),
+                        LNM = c("no_metastasis" = "#66CC00","lymph_node_metastasis" = "#FF6666"),
+                        vascular_invasion = c("0" = "#66B2FF","1" = "#FFB266"),
+                        ETE = c("0" = "#CEE8E2","1" = "#FF9999"),
+                        multifocality = c("0" = "#CC99FF","1" = "#FFFF66"),
+                        bilateral = c("0" = "#99CCFF","1" = "#FF66B2"),
+                        immune = colorRamp2(c(-3,0,3), c("#004474", "white","#BF2525"))
+                      ),
+                      show_annotation_name = T,show_legend = T,
+                      simple_anno_size = unit(1, "cm"),
+                      annotation_legend_param = list(# cluster = list(nrow = 1),
+                        recurence_risk = list(nrow = 1),
+                        age = list(direction = "horizontal"),
+                        sex = list(nrow = 1),
+                        max_tumor_size = list(direction = "horizontal"),
+                        LNM = list(direction = "horizontal"),
+                        structure_recurrence = list(nrow = 1),
+                        disease_specific_death = list(nrow = 1),
+                        vascular_invasion = list(nrow = 1),
+                        ETE = list(nrow = 1),
+                        multifocality = list(nrow = 1),
+                        bilateral = list(nrow = 1),
+                        immune = list(direction = "horizontal")
+                      )
+                    )) %v%
+  Heatmap(testdata2, row_split = 3,  cluster_columns = F, #column_split = 3, #dend_hc3, 
+          # cluster_row_slices = FALSE,cluster_column_slices = FALSE,
+          # row_title = "cluster_within_group", 
+          col =  c(brewer.pal(11,"RdBu")[11:7],"azure1",brewer.pal(11,"RdBu")[5:1]),
+          show_row_names  = T, show_column_names = F, show_column_dend = T,
+          heatmap_legend_param = list(title = "z-score", direction = "horizontal"))
+draw(ht_list, heatmap_legend_side = "bottom", annotation_legend_side = "bottom")
+dev.off()
+
+```
+
+```{r fisher exact test}
+lee_clu3_exf_f = lee_clu3_exf[,c(1,3,5,7:19)] %>% data.frame()
+
+lee_clu3_exf_f$age[lee_clu3_exf_f$age >= 50] = ">=50"
+lee_clu3_exf_f$age[!lee_clu3_exf_f$age %in%  ">=50" ] = "<50"
+
+lee_clu3_exf_f$max_tumor_size[lee_clu3_exf_f$max_tumor_size < 10] = "microMTC"
+lee_clu3_exf_f$max_tumor_size[!lee_clu3_exf_f$max_tumor_size %in% "microMTC"] = "macroMTC"
+
+lee_clu3_exf_f = apply(lee_clu3_exf_f,2,as.character) %>%data.frame()
+
+lee_clu3_exf_f$recur[lee_clu3_exf_f$recur == "0"] = "Relief"
+lee_clu3_exf_f$recur[lee_clu3_exf_f$recur == "1"] = "Structure recurrence"
+
+lee_clu3_exf_f$death[lee_clu3_exf_f$death == "0"] = "Survival"
+lee_clu3_exf_f$death[lee_clu3_exf_f$death == "1"] = "Disease-specific mortality"
+
+lee_clu3_exf_f$mulifocality[lee_clu3_exf_f$mulifocality == "0"] = "Single focus"
+lee_clu3_exf_f$mulifocality[lee_clu3_exf_f$mulifocality == "1"] = "Multiple foci"
+
+lee_clu3_exf_f$bilateral[lee_clu3_exf_f$bilateral == "0"] = "Uni-lateral"
+lee_clu3_exf_f$bilateral[lee_clu3_exf_f$bilateral == "1"] = "Bil-ateral"
+
+lee_clu3_exf_f$vascular_invasion[lee_clu3_exf_f$vascular_invasion == "0"] = "No vascular invasion"
+lee_clu3_exf_f$vascular_invasion[lee_clu3_exf_f$vascular_invasion == "1"] = "Vascular invasion"
+
+lee_clu3_exf_f$ETE[lee_clu3_exf_f$ETE == "0"] = "No ETE"
+lee_clu3_exf_f$ETE[lee_clu3_exf_f$ETE == "1"] = "Extrathyroidal extension"
+
+lee_clu3_exf_f$HT[lee_clu3_exf_f$HT == "0"] = "No HT"
+lee_clu3_exf_f$HT[lee_clu3_exf_f$HT == "1"] = "HT"
+
+lee_clu3_exf_f$concomitant_PTC[lee_clu3_exf_f$concomitant_PTC == "0"] = "No PTC"
+lee_clu3_exf_f$concomitant_PTC[lee_clu3_exf_f$concomitant_PTC == "1"] = "Co-occurring with PTC"
+
+## cluster i vs others
+results = data.frame()
+for (i in 1:3) {
+  lee_clu3_exf_f1 = lee_clu3_exf_f
+  lee_clu3_exf_f1$cluster[!lee_clu3_exf_f1$cluster == i]  = "Others"
+  n = 1
+  for (j in c(2:16)) {
+    lee_clu3_exf_f1 = lee_clu3_exf_f1[!is.na(lee_clu3_exf_f1[,j]),]
+    table_group = as.data.frame(table(lee_clu3_exf_f1[,c(1,j)]))
+    group1 = matrix(table_group$Freq, nrow = 2,
+                    dimnames = list(cluster = c(i,"Others"), var = c(unique(lee_clu3_exf_f1[,j]))
+                    )
+                                    )
+    
+    a = chisq.test(group1, simulate.p.value = TRUE, B = 1e5)
+    p_value = a[["p.value"]]
+    results[i,n] = p_value
+    n = n+1
+  }
+}
+
+names(results) = names(lee_clu3_exf_f1)[c(2:16)]
+row.names(results) = c("1 vs. others", "2 vs. others","3 vs. others")
+
+write.csv(results,"lee_extractfeatures_fisher_results.csv", row.names = T)
+
+```
+
+
+```{r barplot}
+lee_clu3_exf_f$age = lee_clu3_exf$age
+lee_clu3_exf_f$age = as.numeric(lee_clu3_exf_f$age)
+
+lee_clu3_exf_f$max_tumor_size = lee_clu3_exf$max_tumor_size/10
+lee_clu3_exf_f$max_tumor_size = as.numeric(lee_clu3_exf_f$max_tumor_size)
+
+
+## barplot
+count_lee = lee_clu3_exf_f[,-c(4,12)] %>%
+  pivot_longer(cols = -cluster, values_to = 'clinical') %>%
+  count(cluster, name,clinical, name = 'count')
+
+
+pl = list()
+n = 1
+for (var in names(lee_clu3_exf_f)[c(2:3,5:11,13:16)]) {
+  
+  pl[[n]] =
+    
+    count_lee[(count_lee$name == var) & !is.na(count_lee$clinical),] %>%
+    mutate(clinical = fct_reorder(clinical, count, .desc = F)) %>%
+    mutate(percentage = count / sum(count)) %>%
+    ggplot(aes(x=cluster, y=percentage, fill=clinical)) +
+    geom_bar(position="stack", stat="identity", alpha=.8) +
+    theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.background = element_blank(),
+          axis.line = element_line(colour = "black",size=1),
+          axis.text = element_text(size = 15,
+                                   color = "black"),
+          axis.text.x = element_text(size = 15,hjust = 0.9),
+          axis.title = element_text(size = 15),
+          axis.text.y = element_text(size = 15,),
+          plot.title = element_text(hjust=0.5,size = 15)
+          # legend.title = element_text(size = 14)
+          # legend.text = element_text(size = 22)
+    )
+  n = n + 1
+}
+
+pdf("barplot_percentage_3clu_clinicals.pdf",width = 20, height = 12)
+ggplot2.multiplot(plotlist = pl, cols = 5)
+dev.off()
+
+pdf("boxplot_cluster_age_boxplot.pdf",width = 4,height = 4)
+ggplot(lee_clu3_exf_f,
+       aes(x=cluster,
+           y=age,
+           col=cluster
+           #add = "jitter"
+       )) +
+  labs(x ="", y = "Age (years)")+
+  geom_boxplot(position=position_dodge(),lwd=0.8) +
+  geom_jitter(alpha = 0.5, position=position_jitterdodge(jitter.width = 0.5), size = 1)+
+  scale_color_manual(values=c("1"= "#EBC442", "2"="#E4793C", "3" = "#A8D286"))+
+  # stat_compare_means(method = "anova", na.rm = T,vjust = 2)+
+  stat_compare_means(method = "wilcox", ref.group = ".all.",
+                     label = "p.format", hide.ns = TRUE)+
+  guides(fill=none) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black",linewidth=1),
+        axis.text = element_text(size = 15,
+                                 color = "black"),
+        axis.text.x = element_text(size = 15,hjust = 0.9),
+        axis.title = element_text(size = 15),
+        axis.text.y = element_text(size = 15,),
+        plot.title = element_text(hjust=0.5,size = 15)
+        #legend.position = "none"
+        # legend.title = element_text(size = 14)
+        # legend.text = element_text(size = 22)
+  )
+dev.off()
+
+
+
+pdf("boxplot_cluster_nodulesize_boxplot.pdf",width = 4,height = 4)
+ggplot(lee_clu3_exf_f,
+       aes(x=cluster,
+           y=max_tumor_size,
+           col=cluster
+           #add = "jitter"
+       )) +
+  labs(x ="", y = "Max nodule size (cm)")+
+  geom_boxplot(position=position_dodge(),lwd=0.8) +
+  geom_jitter(alpha = 0.5, position=position_jitterdodge(jitter.width = 0.5), size = 1)+
+  scale_color_manual(values=c("1"= "#EBC442", "2"="#E4793C", "3" = "#A8D286"))+
+  # stat_compare_means(method = "anova", na.rm = T,vjust = 2)+
+  stat_compare_means(method = "wilcox", ref.group = ".all.",
+                     label = "p.format", hide.ns = TRUE)+
+  guides(fill=none) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.background = element_blank(),
+        axis.line = element_line(colour = "black",linewidth=1),
+        axis.text = element_text(size = 15,
+                                 color = "black"),
+        axis.text.x = element_text(size = 15,hjust = 0.9),
+        axis.title = element_text(size = 15),
+        axis.text.y = element_text(size = 15,),
+        plot.title = element_text(hjust=0.5,size = 15)
+        #legend.position = "none"
+        # legend.title = element_text(size = 14)
+        # legend.text = element_text(size = 22)
+  )
+dev.off()
+
+
+```
+

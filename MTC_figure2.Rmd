@@ -1,0 +1,368 @@
+---
+title: "MTC_fig2"
+author: "Yan Zhou"
+date: "2025-03-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+pacman::p_load(magrittr, tidyverse, Hmisc,survival,survminer,
+               FactoMineR, limma,gridExtra, openxlsx,
+               factoextra, easyGgplot2, circlize,
+               ggrepel, ComplexHeatmap,RColorBrewer,ggplot2)
+
+```
+
+```{r import}
+label = read.xlsx("MTC_discovery_cox_label_346_20250303.xlsx")
+
+```
+
+```{r data=processing}
+## re-order factors
+colnames(label)
+info = c("MS_ID", "sex", "age", "tumor_grade", "max_nodule_size(cm)","heredity_or_sporadic",
+         "HT","multifocality","bilateral","concomitant_PTC","vascular_invasion",
+         "ETE", "LNM", "structure_recurrence", "RFS（Month)", "OS", "DSS")
+
+label = label[, info]
+
+# 1. sex（M  vs. F ）
+# 2. age
+# 3. tumor_grade  (high vs. low)
+# 4. max_nodule_size(cm) 
+# 5. heredity (sporadic vs. hereditary)
+# 6. HT (1 vs. 0)
+# 7. multifocality (1 vs. 0)
+# 8. bilateral (1 vs. 0)
+# 9. concomitant_PTC (1 vs. 0)
+# 10. vascular_invasion (1 vs. 0)
+# 11. ETE (1 vs. 0)
+# 12. LNM (1 vs. 0)
+
+
+
+label[,c(3,5,14:17)] = apply(label[,c(3,5,14:17)],2,as.numeric)
+
+## review factors
+for(g in colnames(label)[2: (ncol(label) - 4 )] ){
+  print(c(g, unique(label[g]) ))
+}
+
+## rename
+names(label) = c("MS_ID","Gender","Age","Tumor_grade","Max_nodule_size","Heredity",
+                 "HT","Multifocality","Bilaterality","Concomitant_with_PTC","Vascular_invasion",
+                 "ETE","LNM","recur","RFS","OS","DSD")
+
+label$Gender = factor(label$Gender, levels = c("F","M"), labels = c("Female","Male"))
+label$Tumor_grade = factor(label$Tumor_grade, levels = c("low","high"))
+label$Heredity = factor(label$Heredity, levels = c("hereditary","sporadic"))
+label$HT = factor(label$HT, levels = c("0","1"))
+label$Multifocality = factor(label$Multifocality, levels = c("0","1"))
+label$Bilaterality = factor(label$Bilaterality, levels = c("0","1"))
+label$Concomitant_with_PTC = factor(label$Concomitant_with_PTC, levels = c("0","1"))
+label$Vascular_invasion = factor(label$Vascular_invasion, levels = c("0","1"))
+label$ETE = factor(label$ETE, levels = c("0","1"))
+label$LNM = factor(label$LNM, levels = c("0","1"))
+
+
+```
+
+```{r CoxPH}
+
+univ_results = data.frame()
+
+for (i in 2:13) {
+  covariates <- names(label)[i]  # risk factors
+  univ_formulas <- as.formula(paste('Surv(RFS, recur)~',covariates))
+  data = label[!is.na(label[,i]),]
+  univ_models <- coxph(univ_formulas, data)
+  
+  x <- summary(univ_models)
+  n = x$n
+  likelihood.pvalue <- signif(x$logtest['pvalue'], digits = 3) %>% as.numeric()
+  wald.pvalue <- signif(x$wald['pvalue'], digits = 3)  %>% as.numeric()
+  score.pvalue <- signif(x$sctest['pvalue'], digits = 3) %>% as.numeric()
+  beta <- signif(x$coef[1], digits=2);
+  HR <- signif(x$coef[2], digits=2);
+  HR.confint.lower <- signif(x$conf.int[,"lower .95"],2)
+  HR.confint.upper <- signif(x$conf.int[,"upper .95"],2)
+  HR <- paste0(HR, " (", 
+               HR.confint.lower, "-", HR.confint.upper, ")")
+  res<-c(n,beta, HR, likelihood.pvalue, wald.pvalue,score.pvalue)
+  univ_results = rbind(univ_results,res)
+
+}
+
+names(univ_results)<-c("count","beta", "HR (95% CI for HR)",           
+                       "likelihood.pvalue", "wald.pvalue", "score.pvalue")
+
+row.names(univ_results) = names(label)[2:13]
+
+write.xlsx(univ_results,"20250303/univariate_cox_continuous_recur_20250303.xlsx",rowNames = T)
+
+
+### multivariate_cox
+res.cox <- coxph(Surv(RFS, recur) ~ Gender + Age + Tumor_grade + Max_nodule_size + Heredity +
+                   HT + Multifocality + Bilaterality + Concomitant_with_PTC + Vascular_invasion +
+                   ETE + LNM, label)
+res.cox
+summary(res.cox)
+
+pdf("multicox_continuous_recur_forest_20250303.pdf",onefile = F, width = 10, height = 8)
+ggforest(res.cox, data = label,
+         main = "Hazard ratio",
+         cpositions = c(0.02, 0.2, 0.35),
+         fontsize = 1,
+         noDigits = 3)
+dev.off()
+
+
+
+
+```
+
+
+```{r DEPs}
+sinfo = read.xlsx("MTC_total_sample_info_20240812.xlsx", sheet = 1)
+
+df_combine = read.table("MTC_combined389samples_discovry_9380prots_20240424.csv", quote = "",sep = ",", row.names = 1, header = T)
+
+names(df_combine) = sinfo$MS_ID[match(names(df_combine),sinfo$MS_File_name)]
+
+# remove samples with persistence
+df_r = df_combine[,sinfo$MS_ID[sinfo$structure_recurrence %in% c("0","1")]]
+
+
+## R vs. NR
+nm_R = names(df_r)
+group_list_R <- sinfo$structure_recurrence[match(nm_R, sinfo$MS_ID)]
+group_list_R = factor(group_list_R, labels = c("R","NR"), levels = c("1", "0"))
+
+design <- model.matrix( ~ 0 + factor(group_list_R))
+
+rownames(design) <- nm_R
+colnames(design) = levels(group_list_R)
+
+contrast.matrix <-
+    makeContrasts(paste0(levels(group_list_R), collapse = "-"), levels = design)
+
+fit <- lmFit(df_r[,nm_R], design)
+
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+tempOutput = topTable(fit2,
+                      coef = 1,
+                      n = Inf,
+                      adjust.method = "BH")
+
+#火山图
+Dat_R <- tempOutput
+Dat_R$threshold = factor(ifelse(
+    Dat_R$adj.P.Val < 0.05 &
+        abs(Dat_R$logFC) >= 0.25,
+    ifelse(Dat_R$logFC >= 0.25 , 'Up (logFC>0.25)', 'Down (logFC<-0.25)'),
+    '-'
+))
+
+Dat_R$Prot <- rownames(Dat_R)
+
+Dat_R$threshold = factor(Dat_R$threshold,levels = c("Up (logFC>0.5)","Up (logFC>0.25)","Down (logFC<-0.25)", "Down (logFC<-0.5)", "-"))
+
+Dat_R$threshold[(abs(Dat_R$logFC) > 0.5) & (Dat_R$threshold == "Up (logFC>0.25)") ] = "Up (logFC>0.5)"
+Dat_R$threshold[(abs(Dat_R$logFC) > 0.5) & Dat_R$threshold == "Down (logFC<-0.25)" ] = "Down (logFC<-0.5)"
+
+# R vs. NR
+### heatmap
+df_r_0.25 = df_r[row.names(df_r) %in% Dat_R$Prot[!Dat_R$threshold == "-"], ]
+
+
+## D vs. ND
+nm_D = names(df_combine)
+group_list_D <- sinfo$DSS[match(nm_D, sinfo$MS_ID)]
+group_list_D = factor(group_list_D, labels = c("D","ND"), levels = c("1", "0"))
+
+design <- model.matrix( ~ 0 + factor(group_list_D))
+
+rownames(design) <- nm_D
+colnames(design) = levels(group_list_D)
+
+contrast.matrix <-
+    makeContrasts(paste0(levels(group_list_D), collapse = "-"), levels = design)
+
+fit <- lmFit(df_combine[,nm_D], design)
+
+fit2 <- contrasts.fit(fit, contrast.matrix)
+fit2 <- eBayes(fit2)
+tempOutput = topTable(fit2,
+                      coef = 1,
+                      n = Inf,
+                      adjust.method = "BH")
+
+#火山图
+Dat_D <- tempOutput
+Dat_D$threshold = factor(ifelse(
+    Dat_D$adj.P.Val < 0.05 &
+        abs(Dat_D$logFC) >= 0.25,
+    ifelse(Dat_D$logFC >= 0.25 , "Up (logFC>0.25)","Down (logFC<-0.25)"),
+    '-'
+))
+
+Dat_D$Prot <- rownames(Dat_D)
+
+Dat_D$threshold = factor(Dat_D$threshold,levels = c("Up (logFC>0.5)","Up (logFC>0.25)","Down (logFC<-0.25)", "Down (logFC<-0.5)", "-"))
+
+Dat_D$threshold[(abs(Dat_D$logFC) > 0.5) & (Dat_D$threshold == "Up (logFC>0.25)") ] = "Up (logFC>0.5)"
+Dat_D$threshold[(abs(Dat_D$logFC) > 0.5) & Dat_D$threshold == "Down (logFC<-0.25)" ] = "Down (logFC<-0.5)"
+
+write.csv(Dat_D, "DEPs_lm_DvsND_20240424.csv")
+
+top_n_values <- Dat_D[Dat_D$threshold %in% c("Up (logFC>0.5)","Down (logFC<-0.5)"),] %>%
+  group_by(threshold) %>%
+  top_n(10, abs(logFC))
+
+df_d_0.25 = df_combine[row.names(df_combine) %in% Dat_D$Prot[!Dat_D$threshold == "-"], ]
+
+
+
+
+```
+
+
+```{r DEPs heatmap}
+DEPs_all = c(row.names(df_r_0.25),row.names(df_d_0.25)) %>% unique() # combine proteins
+nm_all = nm_R[nm_R %in% nm_D]  # overlap samples
+
+df_ht = df_combine[DEPs_all,nm_all]
+
+annot = data.frame(nm_all,sinfo$structure_recurrence[match(nm_all,sinfo$MS_ID)],
+                   sinfo$DSS[match(nm_all,sinfo$MS_ID)])
+
+names(annot) = c("sample","SR","DSD")
+
+# transfer to Z-score and remove outliers
+centermatrix <- scale(t(df_ht))
+testdata <- data.frame(centermatrix)
+testdata = testdata[match(annot$sample, row.names(testdata)),]
+
+o1 <- (fivenum(unlist(testdata))[4]-fivenum(unlist(testdata))[2])*1.5+fivenum(unlist(testdata))[4]
+o2 <- fivenum(unlist(testdata))[2]-(fivenum(unlist(testdata))[4]-fivenum(unlist(testdata))[2])*1.5
+testdata[testdata>o1]=o1 %>%as.numeric()
+testdata[testdata<o2]=o2 %>%as.numeric()
+
+testdata2 <- t(testdata)
+
+dend_hc3 = cluster_within_group(testdata2, annot$SR)
+
+### median heatmap
+thy = read.xlsx("20220906TPHP_51tissue_ulhen_classification_thyroid.xlsx",rowNames = T)
+thy = t(thy) %>% as.data.frame()
+unique(thy$thyroid)
+
+thy_prot = row.names(thy)[thy$thyroid %in% c("tissue enriched", "tissue enhanced")]
+
+seretome = read.table("secretome_drug/protein_class_Predicted.tsv",header = T,sep = "\t",quote ="\"")
+seretome = seretome[seretome$Evidence == "Evidence at protein level",]
+se_prot = seretome$Uniprot
+
+drug1 = read.xlsx("secretome_drug/IPA_annotated_prot_R.xlsx")
+drug2 = read.xlsx("secretome_drug/IPA_annotated_prot_D.xlsx")
+names(drug1) = drug1[1,]
+drug1 = drug1[-1,]
+drug1$`Drug(s)` = gsub(" ","",drug1$`Drug(s)`)
+drug1 = drug1[!drug1$`Drug(s)` == "",c(3,9)]
+
+names(drug2) = drug2[1,]
+drug2 = drug2[-1,]
+drug2$`Drug(s)` = gsub(" ","",drug2$`Drug(s)`)  
+drug2 = drug2[!drug2$`Drug(s)` == "",c(3,9)]
+
+drug = rbind(drug1,drug2)
+drug_prot = drug$ID %>% unique()
+
+SR = sinfo$MS_ID[sinfo$structure_recurrence == "1"]
+DSD = sinfo$MS_ID[sinfo$DSS == "1"]
+DSD = DSD[DSD %in% nm_all]
+
+SR = SR[!SR %in% DSD]
+
+NR = nm_all[!nm_all %in% c(SR,DSD)]
+
+centermatrix <- scale(t(df_ht))
+testdata <- data.frame(centermatrix)
+testdata = testdata[match(annot$sample, row.names(testdata)),] 
+
+df_ht_zscore = data.frame(t(testdata))
+
+df_m = data.frame(row.names(df_ht_zscore))
+
+df_m$NR = apply(df_ht_zscore,1,function(x){median(x[names(df_ht_zscore) %in% NR])})
+df_m$SR = apply(df_ht_zscore,1,function(x){median(x[names(df_ht_zscore) %in% SR])})
+df_m$DSD = apply(df_ht_zscore,1,function(x){median(x[names(df_ht_zscore) %in% DSD])})
+
+annot2 = data.frame(row.names(df_ht_zscore))
+names(annot2)[1] = "prot"
+annot2$DEPs_R = "0"
+annot2$DEPs_R[annot2$prot %in% row.names(df_r_0.25)] = "1"
+annot2$DEPs_D = "0"
+annot2$DEPs_D[annot2$prot %in% row.names(df_d_0.25)] = "1"
+
+annot2$uniprot = sapply(annot2$prot,function(v){strsplit(v,"_")[[1]][1]})  
+
+annot2$thyroid_specific = "0"  
+annot2$thyroid_specific[annot2$uniprot %in% thy_prot] = "1"
+
+annot2$secreted = "0"  
+annot2$secreted[annot2$uniprot %in% se_prot] = "1"
+
+annot2$drug_target = "0"  
+annot2$drug_target[annot2$uniprot %in% drug_prot] = "1"
+
+row.names(df_m) = df_m$row.names.df_ht_zscore.
+df_m = df_m[,-1]
+
+
+df_m1 = df_m
+o1 <- (fivenum(unlist(df_m))[4]-fivenum(unlist(df_m))[2])*1.5+fivenum(unlist(df_m))[4]
+o2 <- fivenum(unlist(df_m))[2]-(fivenum(unlist(df_m))[4]-fivenum(unlist(df_m))[2])*1.5
+df_m1[df_m1>o1]=o1 %>%as.numeric()
+df_m1[df_m1<o2]=o2 %>%as.numeric()
+df_m1 = df_m1 %>% as.matrix()
+
+ha = rowAnnotation(recur = annot2$DEPs_R,
+                   death = annot2$DEPs_D,
+                   thyroid_specific = annot2$thyroid_specific,
+                   secreted = annot2$secreted,
+                   drug_target = annot2$drug_target,
+                   col = list(recur = c("0" = "white","1" = "#E66563"),
+                              death = c("0" = "white","1" = "#A264A6"),
+                              thyroid_specific = c("0" = "white","1" = "#990000"),
+                              secreted = c("0" = "white","1" = "#0066CC"),
+                              drug_target = c("0" = "white","1" = "#336600")
+                   ),
+                   border = T, gap = unit(1, "mm"),
+                   show_annotation_name = T,show_legend = T,
+                   simple_anno_size = unit(4, "mm")
+                   # annotation_legend_param = list(recur = list(nrow = 1),
+                   #                                death = list(nrow = 1),
+                   #),
+                   # foo = anno_empty(border = FALSE, 
+                   #                  width = max_text_width(unlist(text_list)) + unit(4, "mm"))
+)
+Heatmap(df_m1,  cluster_columns = F, cluster_rows = T,  row_split = 2,  
+        right_annotation = ha, border = T, width = unit(3, "cm"),
+        #column_split = 3, #dend_hc3, 
+        # cluster_row_slices = FALSE,cluster_column_slices = FALSE,
+        # row_title = "cluster_within_group", 
+        col =  c(brewer.pal(11,"RdBu")[11:7],"azure1",brewer.pal(11,"RdBu")[5:1]),
+        show_row_names  = F, show_column_names = T, show_column_dend = T,show_row_dend = T,
+        heatmap_legend_param = list(title = "z-score", direction = "vertical"))
+for(i in 1:2) {
+  decorate_annotation("foo", slice = i, {
+    grid.rect(x = 0, width = unit(2, "mm"), gp = gpar(fill = i, col = NA), just = "left")
+    # grid.text(paste(text_list[[i]], collapse = "\n"), x = unit(4, "mm"), just = "left")
+  })
+}
+
+
+```
